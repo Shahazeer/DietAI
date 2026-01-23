@@ -1,0 +1,112 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env.local
+.env.*.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/chroma_db/
+
+# Uploads
+uploads/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Logs
+*.log
+logs/
+
+# Node modules (for frontend)
+node_modules/
+.npm/
+
+# Build outputs
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation
+docs/_build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Vector database
+backend/data/chroma_db/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Generated files
+*.docx
+LEARNING_GUIDE.docx
+*.zip
+
+# Fine-tuning artifacts (if you create them later)
+fine_tuned_*/
+*.gguf
+*.safetensors
+*.bin
+fine_tuning_data/
+
+# Test results
+test_results_*.json
