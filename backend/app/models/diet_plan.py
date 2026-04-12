@@ -22,6 +22,7 @@ class ProgressReport(BaseModel):
     improvements: List[str]
     deteriorations: List[str]
     effectiveness_score: float  # 0-100
+    summary: str = ""
 
 class DietPlanResponse(BaseModel):
     id: str

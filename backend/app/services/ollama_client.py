@@ -1,69 +1,70 @@
 import httpx
 import base64
+import logging
 from typing import List
 from app.config import settings
 
-class OllamaClient:
+logger = logging.getLogger(__name__)
+
+
+class LLMClient:
     def __init__(self):
         self.base_url = settings.ollama_url
         self.timeout = httpx.Timeout(float(settings.ollama_timeout))
-        
-    async def generate(self, model: str, prompt: str, num_predict: int = 4096) -> str:
-        """Basic text generation"""
+
+    async def _post(self, messages: List[dict], model: str, max_tokens: int) -> str:
+        """Core method — all calls route through here"""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            logger.debug("POST %s/v1/chat/completions model=%s max_tokens=%d", self.base_url, model, max_tokens)
             response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "num_predict": num_predict,  # Max tokens to generate
-                        "num_ctx": 8192,             # Context window size
-                    }
-                },
+                f"{self.base_url}/v1/chat/completions",
+                json={"model": model, "messages": messages, "max_tokens": max_tokens},
             )
+            if response.status_code != 200:
+                logger.error(
+                    "LM Studio %d on model=%s — response: %s",
+                    response.status_code, model, response.text[:300]
+                )
             response.raise_for_status()
-            return response.json()["response"]
-    
+            content = response.json()["choices"][0]["message"]["content"]
+            logger.debug("Response from %s (%d chars)", model, len(content))
+            return content
+
+    async def generate(self, model: str, prompt: str, num_predict: int = 4096) -> str:
+        """Single-turn text generation"""
+        return await self._post(
+            messages=[{"role": "user", "content": prompt}],
+            model=model,
+            max_tokens=num_predict,
+        )
+
     async def generate_with_image(self, model: str, prompt: str, image_path: str) -> str:
-        """Vision model generation with image"""
+        """Vision model — auto-detects PNG vs JPEG MIME type"""
+        ext = image_path.lower()
+        if ext.endswith(".png"):
+            mime = "image/png"
+        elif ext.endswith(".jpg") or ext.endswith(".jpeg"):
+            mime = "image/jpeg"
+        else:
+            mime = "image/png"  # safe default for converted PDFs
+
         with open(image_path, "rb") as f:
             image_b64 = base64.b64encode(f.read()).decode()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "images": [image_b64],
-                    "options": {
-                        "num_predict": 2048,
-                        "num_ctx": 4096,
-                    }
-                },
-            )
-            response.raise_for_status()
-            return response.json()["response"]
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+                ],
+            }
+        ]
+        return await self._post(messages=messages, model=model, max_tokens=2048)
 
     async def chat(self, model: str, messages: List[dict]) -> str:
-        """Chat completion"""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {
-                        "num_predict": 4096,
-                        "num_ctx": 8192,
-                    }
-                },
-            )
-            response.raise_for_status()
-            return response.json()["message"]["content"]
+        """Multi-turn chat"""
+        return await self._post(messages=messages, model=model, max_tokens=4096)
 
-ollama = OllamaClient()
+
+llm = LLMClient()

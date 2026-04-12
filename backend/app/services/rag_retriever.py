@@ -27,14 +27,15 @@ class RAGRetriever:
         Returns:
             Formatted string with relevant nutrition knowledge
         """
-        # Build query from health issues
-        health_issues = ", ".join(health_analysis.issues[:3]) if health_analysis.issues else "general wellness"
+        # Build query using full health context — issues + risk_factors for better retrieval
+        health_issues = ", ".join(health_analysis.issues) if health_analysis.issues else "general wellness"
+        risk_factors = ", ".join(health_analysis.risk_factors) if health_analysis.risk_factors else ""
         diet_type = preferences.get("type", "non-veg")
         allergies = ", ".join(preferences.get("allergies", [])) or "None"
         cuisines = ", ".join(preferences.get("cuisines", ["Indian"]))
-        
-        # Query for health-specific knowledge
-        query_text = f"foods good for {health_issues}, {diet_type} diet, {cuisines} cuisine"
+
+        health_context = f"{health_issues}, {risk_factors}".strip(", ") if risk_factors else health_issues
+        query_text = f"foods good for {health_context}, {diet_type} diet, {cuisines} cuisine"
         
         print(f"[RAG] Retrieving knowledge for: {query_text}")
         

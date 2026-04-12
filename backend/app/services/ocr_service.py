@@ -1,179 +1,116 @@
-import json
-import re
+"""
+OCR Service — Stage 1 of the extraction pipeline.
+
+Responsibility: convert the uploaded file into raw text transcriptions,
+one per page. Nothing more. Parsing, validation, and analysis are handled
+downstream by the LabContemplator (Stage 2).
+"""
+
+import logging
 from pathlib import Path
 from pdf2image import convert_from_path
-from PIL import Image
-from app.services.ollama_client import ollama
+from app.services.ollama_client import llm
+from app.services.lab_contemplator import lab_contemplator
 from app.models.lab_report import LabValue, HealthAnalysis
 from app.config import settings
 
-EXTRACTION_PROMPT = """
-Analyze this lab report image and extract ALL test results.
+logger = logging.getLogger(__name__)
 
-Return ONLY valid JSON in this exact format:
-{
-  "tests": {
-    "hemoglobin": {"value": 14.5, "unit": "g/dL", "reference": "13-17"},
-    "glucose_fasting": {"value": 95, "unit": "mg/dL", "reference": "70-100"},
-    "cholesterol_total": {"value": 210, "unit": "mg/dL", "reference": "<200"},
-    "hdl": {"value": 45, "unit": "mg/dL", "reference": ">40"},
-    "ldl": {"value": 130, "unit": "mg/dL", "reference": "<100"},
-    "triglycerides": {"value": 150, "unit": "mg/dL", "reference": "<150"}
-  }
-}
+# Vision model prompt — ask ONLY for raw transcription.
+# Qwen2-VL and similar models perform much better when not forced to produce JSON.
+# Structured extraction is handled by the contemplation model in Stage 2.
+VISION_TRANSCRIBE_PROMPT = """You are reading a medical laboratory report.
 
-Extract all visible tests. Use snake_case for test names.
-If a value is not visible, omit that test.
-"""
-ANALYSIS_PROMPT = """
-You are a medical analysis assistant. Analyze these lab results:
+Your ONLY job is to transcribe every piece of text and every number you can see.
 
-{lab_data}
+For each lab test result, write it on its own line like this:
+  Test Name | Value | Unit | Reference Range
 
-Patient dietary preferences: {preferences}
+Also transcribe:
+- Patient name/ID if visible
+- Date of the report
+- Lab name / hospital name
+- Any doctor notes or comments
+- Any test that has a value, even if you're unsure of the name
 
-Provide analysis in this JSON format:
-{{
-  "issues": ["list of health issues identified"],
-  "risk_factors": ["potential health risks based on values"],
-  "recommendations": ["dietary recommendations for improvement"]
-}}
+Do NOT summarise. Do NOT interpret. Do NOT skip anything.
+Transcribe EXACTLY what you see, line by line."""
 
-Focus on nutritional and dietary aspects. Be specific about which values are concerning.
-"""
 
 class OCRService:
-    async def process_report(self, file_path: str, preferences: dict) -> tuple[dict, HealthAnalysis]:
-        """Process a lab report and extract data with analysis"""
-        try:
-            images = self._prepare_images(file_path)
-            
-            all_tests = {}
-            for img_path in images:
-                print(f"[OCR] Extracting from image: {img_path}")
-                extracted = await self._extract_from_image(img_path)
-                print(f"[OCR] Extracted tests: {extracted}")
-                all_tests.update(extracted)
+    async def process_report(
+        self,
+        file_path: str,
+        preferences: dict,
+    ) -> tuple[dict, HealthAnalysis]:
+        """
+        Full pipeline:
+          Stage 1 (here)  — vision model transcribes each page to raw text
+          Stage 2 (contemplator) — validates, structures, analyses the raw text
+        """
+        image_paths = self._prepare_images(file_path)
 
-            lab_data = {}
-            for test_name, values in all_tests.items():
-                lab_data[test_name] = LabValue(
-                    value=values['value'],
-                    unit=values['unit'],
-                    reference_range=values.get('reference'),
-                    status=self._determine_status(values)
-                )
+        raw_pages: list[str] = []
+        for img_path in image_paths:
+            logger.info("[OCR] Stage 1 — transcribing: %s", img_path)
+            text = await self._transcribe_image(img_path)
+            if text.strip():
+                logger.info("[OCR] Page transcription (%d chars):\n%s", len(text), text[:400])
+                raw_pages.append(text)
+            else:
+                logger.warning("[OCR] Vision model returned empty output for %s", img_path)
 
-            print(f"[OCR] Analyzing {len(lab_data)} tests...")
-            analysis = await self._analyze_result(lab_data, preferences)
-            print(f"[OCR] Analysis complete: {analysis}")
-            return lab_data, analysis
-        except Exception as e:
-            print(f"[OCR ERROR] {type(e).__name__}: {e}")
-            raise
+        if not raw_pages:
+            logger.error("[OCR] Vision model produced no output for any page")
+            return {}, HealthAnalysis(
+                issues=["Vision model could not read this document"],
+                risk_factors=[],
+                recommendations=["Try a clearer scan or a different file format"],
+            )
+
+        logger.info("[OCR] Stage 1 complete — %d page(s) transcribed. Passing to contemplator...", len(raw_pages))
+
+        # Stage 2 — hand off ALL pages to the contemplation model
+        lab_data, health_analysis = await lab_contemplator.process(raw_pages, preferences)
+        return lab_data, health_analysis
 
     def _prepare_images(self, file_path: str) -> list[str]:
-        """Convert PDF to images or return image path"""
-
+        """
+        PDFs → convert to PNG pages at 200 DPI, saved under uploads/images/<stem>/
+        Images → return as-is
+        """
         path = Path(file_path)
 
-        if path.suffix.lower() == '.pdf':
-            images = convert_from_path(str(path))
-            img_paths = []
+        if path.suffix.lower() == ".pdf":
+            # uploads/pdfs/<stem>.pdf → uploads/images/<stem>/page0.png ...
+            images_dir = path.parent.parent / "images" / path.stem
+            images_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("[OCR] Converting PDF → PNG (200 DPI) into %s", images_dir)
 
-            for i, img in enumerate(images):
-                img_path = path.parent / f"{path.stem}_{i}.png"
-                img.save(str(img_path))
+            pages = convert_from_path(str(path), dpi=200)
+            img_paths = []
+            for i, page in enumerate(pages):
+                img_path = images_dir / f"page{i}.png"
+                page.save(str(img_path), "PNG")
                 img_paths.append(str(img_path))
 
+            logger.info("[OCR] %d page(s) converted", len(img_paths))
             return img_paths
-        else:
-            return [str(path)]
 
-    async def _extract_from_image(self, image_path: str) -> dict:
-        """Use vision model to extract lab values"""
-        response = await ollama.generate_with_image(
-            model=settings.vision_model,
-            prompt=EXTRACTION_PROMPT,
-            image_path=image_path
-        )
+        return [str(path)]
 
+    async def _transcribe_image(self, image_path: str) -> str:
+        """Stage 1 — call vision model to transcribe a single page image"""
         try:
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return data.get('tests', {})
-        except json.JSONDecodeError:
-            pass
+            response = await llm.generate_with_image(
+                model=settings.vision_model,
+                prompt=VISION_TRANSCRIBE_PROMPT,
+                image_path=image_path,
+            )
+            return response.strip()
+        except Exception as e:
+            logger.error("[OCR] Vision model failed on %s: %s", image_path, e)
+            return ""
 
-        return {}
-
-    async def _analyze_result(self, lab_data: dict, preferences: dict) -> HealthAnalysis:
-        """Analyze lab results for health issues"""
-        prompt = ANALYSIS_PROMPT.format(
-            lab_data=json.dumps({k: v.model_dump() for k, v in lab_data.items()}),
-            preferences=json.dumps(preferences)
-        )
-
-        response = await ollama.generate(
-            model=settings.text_model,
-            prompt=prompt
-        )
-
-        try:
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return HealthAnalysis(**data)
-        except json.JSONDecodeError:
-            pass
-
-        return HealthAnalysis()
-    
-    def _determine_status(self, values: dict) -> str:
-        """Determine if value is normal/high/low based on reference"""
-        try:
-            value = float(values.get("value", 0))
-            reference = values.get("reference", "")
-        
-            if not reference:
-                return "unknown"
-        
-            reference = reference.strip()
-        
-            # Handle "< X" format (e.g., "<200" for cholesterol)
-            if reference.startswith("<"):
-                max_val = float(reference[1:].strip())
-                return "normal" if value < max_val else "high"
-        
-            # Handle "> X" format (e.g., ">40" for HDL)
-            if reference.startswith(">"):
-                min_val = float(reference[1:].strip())
-                return "normal" if value > min_val else "low"
-        
-            # Handle "X-Y" range format (e.g., "13-17" for hemoglobin)
-            if "-" in reference:
-                parts = reference.split("-")
-                min_val = float(parts[0].strip())
-                max_val = float(parts[1].strip())
-            
-                if value < min_val:
-                    return "low"
-                elif value > max_val:
-                    return "high"
-                else:
-                    return "normal"
-        
-            # Handle single value (treat as max)
-            try:
-                max_val = float(reference)
-                return "normal" if value <= max_val else "high"
-            except ValueError:
-                pass
-        
-            return "unknown"
-        
-        except (ValueError, TypeError, IndexError):
-            return "unknown"
 
 ocr_service = OCRService()

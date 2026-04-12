@@ -1,95 +1,132 @@
 import json
 import re
-from datetime import datetime, timedelta
+import logging
 from typing import Optional
-from app.services.ollama_client import ollama
+from app.services.ollama_client import llm
 from app.models.diet_plan import DietPlanResponse, DayPlan, Meal, ProgressReport
 from app.models.lab_report import HealthAnalysis
 from app.config import settings
 from app.services.rag_retriever import get_rag_retriever
 
-DIET_PLAN_PROMPT_WITH_RAG = """{nutrition_knowledge}You are an expert dietician. Create a 7-day meal plan for these health issues:
-{health_issues}
+logger = logging.getLogger(__name__)
 
-Diet: {diet_type} | Allergies: {allergies} | Cuisine: {cuisines}
+DIET_PLAN_PROMPT = """{nutrition_knowledge}You are an expert clinical dietician creating a personalized 7-day meal plan.
 
-CRITICAL DIET RESTRICTIONS - YOU MUST FOLLOW THESE:
-- If diet is "vegetarian": DO NOT include ANY meat, fish, seafood, poultry, or eggs
-- If diet is "vegan": DO NOT include ANY animal products (meat, fish, dairy, eggs, honey)
-- If diet is "eggetarian": You can include eggs but NO meat, fish, seafood, or poultry
-- If allergies are specified: DO NOT include those ingredients
+PATIENT HEALTH PROFILE:
+- Active health issues: {health_issues}
+- Risk factors: {risk_factors}
+- Lab-based dietary recommendations: {recommendations}
 
-IMPORTANT: Use ONLY the foods from the NUTRITION KNOWLEDGE BASE above. Select foods that are specifically good for the user's health conditions AND match their diet type.
+DIETARY CONSTRAINTS — STRICTLY FOLLOW ALL OF THESE:
+- Diet type: {diet_type}
+- Allergies (NEVER include these ingredients): {allergies}
+- Preferred cuisines: {cuisines}
+- vegetarian: NO meat, fish, seafood, poultry, or eggs
+- vegan: NO animal products at all (no meat, fish, dairy, eggs, honey)
+- eggetarian: eggs allowed, NO meat, fish, seafood, or poultry
+- non-veg: all foods allowed
 
-Return ONLY valid JSON (no extra text):
-{{"days":[{{"day":1,"breakfast":{{"name":"...","ingredients":["..."],"benefits":["..."],"calories":300}},"lunch":{{"name":"...","ingredients":["..."],"benefits":["..."],"calories":400}},"dinner":{{"name":"...","ingredients":["..."],"benefits":["..."],"calories":400}}}}],"rationale":"..."}}
+{progress_context}
+MEAL PLAN RULES:
+- Every meal must directly address at least one health issue or risk factor
+- Use foods from the nutrition knowledge base above when available
+- Vary meals — do not repeat the same meal across days
+- Keep ingredients realistic and available in {cuisines} cuisine
+- Calorie targets: breakfast 300-400, lunch 400-500, dinner 350-450
 
-Keep ingredient lists short (3-5 items). Keep benefits brief (2-3 items). Include all 7 days."""
+Return ONLY valid JSON with no markdown, no explanation, no extra text:
+{{"days":[{{"day":1,"breakfast":{{"name":"Meal Name","ingredients":["ingredient1","ingredient2","ingredient3"],"benefits":["addresses issue1","provides nutrient X"],"calories":350}},"lunch":{{"name":"Meal Name","ingredients":["ingredient1","ingredient2","ingredient3"],"benefits":["benefit1","benefit2"],"calories":450}},"dinner":{{"name":"Meal Name","ingredients":["ingredient1","ingredient2","ingredient3"],"benefits":["benefit1","benefit2"],"calories":400}}}}],"rationale":"Explain how this 7-day plan specifically targets the patient's health issues and risk factors"}}
 
-PROGRESS_CONTEXT = """
-Previous plan results: Improvements: {improvements} | Still issues: {current_issues}
-Focus on foods that worked, replace what didn't."""
+Generate all 7 days."""
+
+PROGRESS_CONTEXT_TEMPLATE = """PREVIOUS PLAN FEEDBACK:
+- What improved: {improvements}
+- Still needs work: {current_issues}
+Build on what worked. Replace meals that did not help the persisting issues.
+"""
+
 
 class DietPlanner:
     def __init__(self):
         self.rag_retriever = get_rag_retriever()
-    
-    async def generate_plan(self, health_analysis: HealthAnalysis, preferences: dict, progress: Optional[ProgressReport] = None) -> dict:
-        """Generate a personalized 7-day meal plan using RAG"""
-        
-        # Retrieve relevant nutrition knowledge using RAG
-        print(f"[DIET] Retrieving nutrition knowledge via RAG...")
+
+    async def generate_plan(
+        self,
+        health_analysis: HealthAnalysis,
+        preferences: dict,
+        progress: Optional[ProgressReport] = None,
+    ) -> dict:
+        """Generate a personalized 7-day meal plan using RAG + full health context"""
+
+        logger.info("[DIET] Retrieving nutrition knowledge via RAG...")
+        nutrition_knowledge = ""
         try:
             nutrition_knowledge = self.rag_retriever.retrieve_for_diet_plan(
                 health_analysis=health_analysis,
                 preferences=preferences,
-                top_k=15
+                top_k=15,
             )
         except Exception as e:
-            print(f"[DIET WARNING] RAG retrieval failed: {e}")
-            print(f"[DIET] Continuing without RAG knowledge...")
-            nutrition_knowledge = ""
-        
-        # Build progress context
+            logger.warning("[DIET] RAG retrieval failed, continuing without it: %s", e)
+
         progress_context = ""
         if progress:
-            progress_context = PROGRESS_CONTEXT.format(
-                improvements=", ".join(progress.improvements) or "None",
-                current_issues=", ".join(progress.current_issues) or "None"
+            improvements = ", ".join(progress.improvements) or "None yet"
+            current_issues = ", ".join(progress.current_issues) or "None"
+            progress_context = PROGRESS_CONTEXT_TEMPLATE.format(
+                improvements=improvements,
+                current_issues=current_issues,
             )
 
-        # Build prompt with RAG knowledge
-        prompt = DIET_PLAN_PROMPT_WITH_RAG.format(
+        # Use ALL health analysis fields — not just issues[:3]
+        health_issues = "; ".join(health_analysis.issues) if health_analysis.issues else "General wellness"
+        risk_factors = "; ".join(health_analysis.risk_factors) if health_analysis.risk_factors else "None identified"
+        recommendations = "; ".join(health_analysis.recommendations) if health_analysis.recommendations else "Balanced nutrition"
+
+        prompt = DIET_PLAN_PROMPT.format(
             nutrition_knowledge=nutrition_knowledge + "\n" if nutrition_knowledge else "",
-            health_issues=", ".join(health_analysis.issues[:3]) if health_analysis.issues else "General wellness",
+            health_issues=health_issues,
+            risk_factors=risk_factors,
+            recommendations=recommendations,
             diet_type=preferences.get("type", "non-veg"),
             allergies=", ".join(preferences.get("allergies", [])) or "None",
             cuisines=", ".join(preferences.get("cuisines", ["Indian"])) or "Indian",
+            progress_context=progress_context,
         )
-        if progress_context:
-            prompt += "\n" + progress_context
 
-        print(f"[DIET] Generating meal plan with {settings.text_model}...")
-        response = await ollama.generate(
+        logger.info(
+            "[DIET] Generating plan with %s — issues: %d, risks: %d, recs: %d",
+            settings.text_model,
+            len(health_analysis.issues),
+            len(health_analysis.risk_factors),
+            len(health_analysis.recommendations),
+        )
+
+        response = await llm.generate(
             model=settings.text_model,
             prompt=prompt,
-            num_predict=8192  # Increased for full 7-day plan
+            num_predict=8192,
         )
-        print(f"[DIET] Response received ({len(response)} chars), parsing JSON...")
+        logger.info("[DIET] Response received (%d chars), parsing...", len(response))
 
         try:
-            # Try to find and parse JSON
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            json_match = re.search(r'\{[\s\S]*\}', response)
             if json_match:
                 result = json.loads(json_match.group())
-                days_count = len(result.get('days', []))
-                print(f"[DIET] Successfully parsed {days_count} days")
+                days_count = len(result.get("days", []))
+                logger.info("[DIET] Successfully parsed %d days", days_count)
                 if days_count > 0:
                     return result
+            logger.warning("[DIET] No JSON found in response. Full response:\n%s", response[:1000])
+        except json.JSONDecodeError as e:
+            logger.error("[DIET] JSON parse error: %s. Response preview:\n%s", e, response[:500])
         except Exception as e:
-            print(f"[DIET ERROR] Failed to parse response: {e}")
-            print(f"[DIET] Raw response preview: {response[:300]}...")
+            logger.error("[DIET] Unexpected error parsing response: %s", e)
 
-        return {"days": [], "rationale": "Failed to generate meal plan. The AI model response was incomplete. Please try again."}
+        return {
+            "days": [],
+            "rationale": "Failed to generate meal plan — model response was incomplete. Please try again.",
+        }
+
 
 diet_planner = DietPlanner()
