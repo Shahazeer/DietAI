@@ -1,34 +1,29 @@
+import hashlib
 import logging
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
+import re
+from datetime import datetime, timezone
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query
 from bson import ObjectId
-from datetime import datetime
+from bson.errors import InvalidId
 from pathlib import Path
-import shutil
 from app.database.mongodb import mongodb
 from app.config import settings
 from app.services.ocr_service import ocr_service
 from app.dependencies.auth import get_current_user
+from app.utils.serialization import serialize_doc
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+PDF_MAGIC = b"%PDF"
+MAX_BYTES = settings.max_upload_size_mb * 1024 * 1024
+_SAFE_FILENAME = re.compile(r"[^a-zA-Z0-9._\-]")
 
-def _serialize(doc: dict) -> dict:
-    if doc is None:
-        return None
-    result = {}
-    for key, value in doc.items():
-        if isinstance(value, ObjectId):
-            result[key] = str(value)
-        elif isinstance(value, datetime):
-            result[key] = value.isoformat()
-        elif isinstance(value, dict):
-            result[key] = _serialize(value)
-        elif isinstance(value, list):
-            result[key] = [_serialize(i) if isinstance(i, dict) else i for i in value]
-        else:
-            result[key] = value
-    return result
+
+def _sanitize_filename(name: str) -> str:
+    """Strip directory components and allow only safe filename characters."""
+    name = Path(name).name
+    return _SAFE_FILENAME.sub("_", name) or "upload.pdf"
 
 
 @router.post("/upload")
@@ -36,20 +31,40 @@ async def upload_lab_report(
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
 ):
+    # Validate content-type header
+    if file.content_type not in ("application/pdf", "application/octet-stream"):
+        raise HTTPException(400, detail="Only PDF files are accepted")
+
+    # Read with hard size limit — reads MAX_BYTES+1 so we can detect oversize files
+    raw = await file.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(413, detail=f"File exceeds {settings.max_upload_size_mb} MB limit")
+
+    # Validate PDF magic bytes
+    if raw[:4] != PDF_MAGIC:
+        raise HTTPException(400, detail="File does not appear to be a valid PDF")
+
+    file_hash = hashlib.sha256(raw).hexdigest()
+
     db = mongodb.get_database()
     user_id = user["id"]
+
+    # Reject duplicate uploads for the same user
+    duplicate = await db.lab_reports.find_one({"user_id": user_id, "file_hash": file_hash})
+    if duplicate:
+        raise HTTPException(409, detail="This file has already been uploaded")
 
     pdfs_dir = Path(settings.upload_dir) / "pdfs"
     pdfs_dir.mkdir(parents=True, exist_ok=True)
 
-    file_ext = Path(file.filename).suffix
-    file_name = f"{user_id}_{datetime.now().timestamp()}{file_ext}"
+    safe_name = _sanitize_filename(file.filename or "upload.pdf")
+    file_name = f"{user_id}_{datetime.now(timezone.utc).timestamp()}_{safe_name}"
     file_path = pdfs_dir / file_name
 
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(raw)
 
-    logger.info("Report uploaded by user=%s file=%s", user_id, file_name)
+    logger.info("Report uploaded by user=%s file=%s hash=%s", user_id, file_name, file_hash[:12])
 
     preferences = {
         "dietary_preferences": user.get("dietary_preferences", ""),
@@ -60,17 +75,18 @@ async def upload_lab_report(
         str(file_path), preferences
     )
 
-    # Check for a previous report to compare
     previous_report = await db.lab_reports.find_one(
         {"user_id": user_id},
         sort=[("upload_date", -1)],
     )
 
+    now = datetime.now(timezone.utc)
     doc = {
         "user_id": user_id,
-        "filename": file.filename,
-        "upload_date": datetime.utcnow(),
-        "file_path": str(file_path),
+        "filename": safe_name,
+        "file_hash": file_hash,
+        "upload_date": now,
+        "file_path": str(file_path),  # internal only — stripped by serialize_doc / never returned
         "extracted_data": {k: v.model_dump() for k, v in extracted_data.items()},
         "health_analysis": health_analysis.model_dump(),
         "previous_report_id": str(previous_report["_id"]) if previous_report else None,
@@ -82,24 +98,47 @@ async def upload_lab_report(
 
     return {
         "id": report_id,
-        "filename": file.filename,
+        "filename": safe_name,
         "extracted_data": doc["extracted_data"],
         "health_analysis": doc["health_analysis"],
     }
 
 
 @router.get("/history")
-async def get_report_history(user: dict = Depends(get_current_user)):
+async def get_report_history(
+    user: dict = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+):
     db = mongodb.get_database()
     user_id = user["id"]
+    skip = (page - 1) * limit
 
-    cursor = db.lab_reports.find({"user_id": user_id}).sort("upload_date", -1)
+    # Fetch reports page
+    report_docs = await (
+        db.lab_reports.find({"user_id": user_id})
+        .sort("upload_date", -1)
+        .skip(skip)
+        .limit(limit)
+        .to_list(limit)
+    )
+    if not report_docs:
+        return []
+
+    # Batch-fetch the most recent diet plan per report — one query instead of N
+    report_ids = [str(doc["_id"]) for doc in report_docs]
+    diet_cursor = db.diet_plans.find({"report_id": {"$in": report_ids}}).sort("created_at", -1)
+    # Keep only the most recent plan per report_id
+    latest_diet: dict[str, dict] = {}
+    async for diet in diet_cursor:
+        rid = diet.get("report_id", "")
+        if rid not in latest_diet:
+            latest_diet[rid] = diet
+
     reports = []
-    async for doc in cursor:
+    for doc in report_docs:
         report_id = str(doc["_id"])
-        diet = await db.diet_plans.find_one(
-            {"report_id": report_id}, sort=[("created_at", -1)]
-        )
+        diet = latest_diet.get(report_id)
         extracted = doc.get("extracted_data", {})
         health = doc.get("health_analysis", {})
         reports.append({
@@ -116,10 +155,13 @@ async def get_report_history(user: dict = Depends(get_current_user)):
 
 @router.get("/{report_id}")
 async def get_report(report_id: str, user: dict = Depends(get_current_user)):
+    try:
+        oid = ObjectId(report_id)
+    except InvalidId:
+        raise HTTPException(400, detail="Invalid report ID format")
+
     db = mongodb.get_database()
-    doc = await db.lab_reports.find_one(
-        {"_id": ObjectId(report_id), "user_id": user["id"]}
-    )
+    doc = await db.lab_reports.find_one({"_id": oid, "user_id": user["id"]})
     if not doc:
         raise HTTPException(404, detail="Report not found")
 
@@ -127,10 +169,10 @@ async def get_report(report_id: str, user: dict = Depends(get_current_user)):
         {"report_id": report_id}, sort=[("created_at", -1)]
     )
 
-    serialized = _serialize(doc)
+    serialized = serialize_doc(doc)
     serialized["id"] = str(doc["_id"])
     serialized.pop("_id", None)
-    serialized["diet_plan"] = _serialize(diet) if diet else None
+    serialized["diet_plan"] = serialize_doc(diet) if diet else None
     if serialized["diet_plan"]:
         serialized["diet_plan"]["id"] = str(diet["_id"])
         serialized["diet_plan"].pop("_id", None)

@@ -1,12 +1,35 @@
+/**
+ * Determines status class from a numeric value and a reference range string.
+ * Handles formats: "X-Y", "X–Y", "<X", ">X", "<=X", ">=X"
+ */
 function getStatusClass(value, ref_range) {
-  if (!ref_range || !value) return '';
-  const match = ref_range.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
-  if (!match) return '';
-  const [, low, high] = match;
+  if (ref_range == null || value == null) return '';
   const num = parseFloat(value);
   if (isNaN(num)) return '';
-  if (num < parseFloat(low) || num > parseFloat(high)) return 'flag';
-  return 'normal';
+
+  const ref = ref_range.trim();
+
+  // Range: "70-100" or "70–100"
+  const rangeMatch = ref.match(/^([\d.]+)\s*[-–]\s*([\d.]+)$/);
+  if (rangeMatch) {
+    const low = parseFloat(rangeMatch[1]);
+    const high = parseFloat(rangeMatch[2]);
+    return num < low || num > high ? 'flag' : 'normal';
+  }
+
+  // Upper bound: "<200" or "<=200"
+  const ltMatch = ref.match(/^<=?\s*([\d.]+)$/);
+  if (ltMatch) {
+    return num > parseFloat(ltMatch[1]) ? 'flag' : 'normal';
+  }
+
+  // Lower bound: ">40" or ">=40"
+  const gtMatch = ref.match(/^>=?\s*([\d.]+)$/);
+  if (gtMatch) {
+    return num < parseFloat(gtMatch[1]) ? 'flag' : 'normal';
+  }
+
+  return '';
 }
 
 export default function LabDataTable({ extractedData }) {
@@ -15,7 +38,11 @@ export default function LabDataTable({ extractedData }) {
   }
 
   const rows = Object.entries(extractedData).map(([key, item]) => {
-    const status = getStatusClass(item.value, item.reference_range);
+    let status = getStatusClass(item.value, item.reference_range);
+    // Fall back to model-provided status when ref range can't be parsed
+    if (!status && item.status) {
+      status = item.status === 'normal' ? 'normal' : item.status === 'unknown' ? '' : 'flag';
+    }
     return { key, ...item, status };
   });
 

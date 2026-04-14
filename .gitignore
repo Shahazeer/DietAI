@@ -12,9 +12,12 @@ ENV/
 dist/
 build/
 
-# Environment variables
+# Environment variables — never commit secrets
+.env
 .env.local
 .env.*.local
+backend/.env
+backend/.env.*
 
 # IDEs
 .vscode/

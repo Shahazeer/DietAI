@@ -1,8 +1,21 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 const ALLERGENS = ['Gluten', 'Dairy', 'Nuts', 'Shellfish', 'Eggs', 'Soy', 'Fish'];
+
+function passwordStrength(password) {
+  if (!password) return { score: 0, label: '', checks: [] };
+  const checks = [
+    { pass: password.length >= 8, label: 'At least 8 characters' },
+    { pass: /[A-Z]/.test(password), label: 'One uppercase letter' },
+    { pass: /[0-9]/.test(password), label: 'One number' },
+    { pass: /[^A-Za-z0-9]/.test(password), label: 'One special character' },
+  ];
+  const score = checks.filter((c) => c.pass).length;
+  const labels = ['', 'Weak', 'Fair', 'Good', 'Strong'];
+  return { score, label: labels[score], checks };
+}
 
 export default function RegisterPage() {
   const [form, setForm] = useState({
@@ -11,9 +24,10 @@ export default function RegisterPage() {
     password: '',
     age: '',
     gender: '',
-    dietary_preferences: '',
+    dietary_preferences: 'non-veg',
     allergies: [],
   });
+  const strength = useMemo(() => passwordStrength(form.password), [form.password]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
@@ -124,13 +138,10 @@ export default function RegisterPage() {
               value={form.dietary_preferences}
               onChange={handleChange}
             >
-              <option value="">No specific preference</option>
+              <option value="non-veg">Non-vegetarian</option>
               <option value="vegetarian">Vegetarian</option>
+              <option value="eggetarian">Eggetarian (eggs, no meat)</option>
               <option value="vegan">Vegan</option>
-              <option value="pescatarian">Pescatarian</option>
-              <option value="keto">Keto</option>
-              <option value="paleo">Paleo</option>
-              <option value="mediterranean">Mediterranean</option>
             </select>
           </div>
 
@@ -162,6 +173,26 @@ export default function RegisterPage() {
               minLength={8}
               required
             />
+            {form.password && (
+              <div className="password-strength">
+                <div className="strength-bar">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div
+                      key={i}
+                      className={`strength-segment ${i <= strength.score ? `s${strength.score}` : ''}`}
+                    />
+                  ))}
+                </div>
+                <span className={`strength-label s${strength.score}`}>{strength.label}</span>
+                <ul className="strength-checks">
+                  {strength.checks.map((c) => (
+                    <li key={c.label} className={c.pass ? 'pass' : 'fail'}>
+                      {c.pass ? '✓' : '✗'} {c.label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
           <button type="submit" className="btn btn-primary btn-full" disabled={loading}>

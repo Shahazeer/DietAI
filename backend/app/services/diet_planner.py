@@ -1,12 +1,10 @@
-import json
-import re
 import logging
-from typing import Optional
 from app.services.ollama_client import llm
 from app.models.diet_plan import DietPlanResponse, DayPlan, Meal, ProgressReport
 from app.models.lab_report import HealthAnalysis
 from app.config import settings
 from app.services.rag_retriever import get_rag_retriever
+from app.utils.llm_utils import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +52,7 @@ class DietPlanner:
         self,
         health_analysis: HealthAnalysis,
         preferences: dict,
-        progress: Optional[ProgressReport] = None,
+        progress: ProgressReport | None = None,
     ) -> dict:
         """Generate a personalized 7-day meal plan using RAG + full health context"""
 
@@ -110,16 +108,14 @@ class DietPlanner:
         logger.info("[DIET] Response received (%d chars), parsing...", len(response))
 
         try:
-            json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                result = json.loads(json_match.group())
-                days_count = len(result.get("days", []))
-                logger.info("[DIET] Successfully parsed %d days", days_count)
-                if days_count > 0:
-                    return result
-            logger.warning("[DIET] No JSON found in response. Full response:\n%s", response[:1000])
-        except json.JSONDecodeError as e:
-            logger.error("[DIET] JSON parse error: %s. Response preview:\n%s", e, response[:500])
+            result = extract_json(response, "[DIET]")
+            days_count = len(result.get("days", []))
+            logger.info("[DIET] Successfully parsed %d days", days_count)
+            if days_count > 0:
+                return result
+            logger.warning("[DIET] Parsed JSON has no days. Response preview:\n%s", response[:1000])
+        except ValueError as e:
+            logger.error("%s", e)
         except Exception as e:
             logger.error("[DIET] Unexpected error parsing response: %s", e)
 

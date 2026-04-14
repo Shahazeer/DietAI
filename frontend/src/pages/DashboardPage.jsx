@@ -4,9 +4,13 @@ import api from '../services/api';
 import ReportHistoryTable from '../components/ReportHistoryTable';
 import ReportDetailPanel from '../components/ReportDetailPanel';
 
+const PAGE_SIZE = 10;
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const [reports, setReports] = useState([]);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedReport, setSelectedReport] = useState(null);
   const [loadingReports, setLoadingReports] = useState(true);
@@ -19,10 +23,15 @@ export default function DashboardPage() {
     setTimeout(() => setToast(null), 5000);
   };
 
-  const fetchReports = useCallback(async () => {
+  const fetchReports = useCallback(async (targetPage = 1) => {
+    setLoadingReports(true);
     try {
-      const { data } = await api.get('/api/reports/history');
+      const { data } = await api.get('/api/reports/history', {
+        params: { page: targetPage, limit: PAGE_SIZE },
+      });
       setReports(data);
+      setHasMore(data.length === PAGE_SIZE);
+      setPage(targetPage);
     } catch {
       showToast('Failed to load reports', 'error');
     } finally {
@@ -31,7 +40,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    fetchReports();
+    fetchReports(1);
   }, [fetchReports]);
 
   const handleSelectReport = async (reportId) => {
@@ -66,6 +75,9 @@ export default function DashboardPage() {
     }
   };
 
+  const handlePrev = () => { if (page > 1) fetchReports(page - 1); };
+  const handleNext = () => { if (hasMore) fetchReports(page + 1); };
+
   return (
     <div className="dashboard">
       <div className="dashboard-header">
@@ -99,6 +111,25 @@ export default function DashboardPage() {
               selectedId={selectedId}
               onSelect={handleSelectReport}
             />
+            {(page > 1 || hasMore) && (
+              <div className="pagination">
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handlePrev}
+                  disabled={page === 1}
+                >
+                  ← Previous
+                </button>
+                <span className="page-indicator">Page {page}</span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleNext}
+                  disabled={!hasMore}
+                >
+                  Next →
+                </button>
+              </div>
+            )}
           </section>
 
           {selectedId && (

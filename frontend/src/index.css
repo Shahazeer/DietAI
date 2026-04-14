@@ -624,3 +624,57 @@ body {
   .diet-grid { grid-template-columns: 1fr; }
   .new-report-page { padding: 1.5rem 1rem; }
 }
+
+/* ── Password Strength Meter ────────────────────────────── */
+.password-strength { margin-top: 0.5rem; }
+.strength-bar { display: flex; gap: 4px; margin-bottom: 0.35rem; }
+.strength-segment {
+  height: 4px;
+  flex: 1;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background var(--duration-fast);
+}
+.strength-segment.s1 { background: #ef4444; }
+.strength-segment.s2 { background: #f97316; }
+.strength-segment.s3 { background: #eab308; }
+.strength-segment.s4 { background: #22c55e; }
+.strength-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 0.4rem;
+}
+.strength-label.s1 { color: #ef4444; }
+.strength-label.s2 { color: #f97316; }
+.strength-label.s3 { color: #eab308; }
+.strength-label.s4 { color: #22c55e; }
+.strength-checks {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+.strength-checks li { font-size: 0.72rem; color: var(--text-secondary); }
+.strength-checks li.pass { color: #22c55e; }
+.strength-checks li.fail { color: var(--text-secondary); }
+
+/* ── Pagination ─────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.page-indicator { font-size: 0.875rem; color: var(--text-secondary); }
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-sm { padding: 0.35rem 0.75rem; font-size: 0.8rem; }

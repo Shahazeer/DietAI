@@ -1,5 +1,12 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from enum import Enum
+from pydantic import BaseModel, EmailStr, field_validator
+
+
+class DietType(str, Enum):
+    vegetarian = "vegetarian"
+    vegan = "vegan"
+    eggetarian = "eggetarian"
+    non_veg = "non-veg"
 
 
 class UserCreate(BaseModel):
@@ -8,8 +15,19 @@ class UserCreate(BaseModel):
     name: str
     age: int
     gender: str
-    dietary_preferences: str = ""
-    allergies: List[str] = []
+    dietary_preferences: DietType = DietType.non_veg
+    allergies: list[str] = []
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one digit")
+        return v
 
 
 class UserLogin(BaseModel):
@@ -23,8 +41,16 @@ class UserOut(BaseModel):
     name: str
     age: int
     gender: str
-    dietary_preferences: str
-    allergies: List[str]
+    dietary_preferences: DietType
+    allergies: list[str]
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    age: int | None = None
+    gender: str | None = None
+    dietary_preferences: DietType | None = None
+    allergies: list[str] | None = None
 
 
 class TokenResponse(BaseModel):
