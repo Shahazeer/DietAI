@@ -12,9 +12,8 @@ unstructured) and produces a validated, structured health profile by:
 """
 
 import logging
-from pydantic import ValidationError
 from app.services.ollama_client import llm
-from app.models.lab_report import LabValue, HealthAnalysis, ContemplationResult
+from app.models.lab_report import LabValue, HealthAnalysis
 from app.config import settings
 from app.utils.llm_utils import extract_json
 
@@ -169,14 +168,13 @@ class LabContemplator:
                 messages=messages,
             )
             logger.debug("[CONTEMPLATE] Raw response (%d chars): %s...", len(response), response[:300])
-            raw = extract_json(response, "[CONTEMPLATE]")
-            validated = ContemplationResult.model_validate(raw)
-            return validated.model_dump()
+            # Use the raw dict directly — per-item errors are caught in
+            # _build_lab_values, so there is no need for strict full-schema
+            # validation that would silently wipe all data on a minor mismatch.
+            return extract_json(response, "[CONTEMPLATE]")
 
         except ValueError as e:
             logger.error("%s", e)
-        except ValidationError as e:
-            logger.error("[CONTEMPLATE] LLM response failed schema validation: %s", e)
         except Exception as e:
             logger.error("[CONTEMPLATE] Unexpected error: %s", e)
 

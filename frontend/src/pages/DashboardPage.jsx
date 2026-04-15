@@ -1,10 +1,23 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import ReportHistoryTable from '../components/ReportHistoryTable';
 import ReportDetailPanel from '../components/ReportDetailPanel';
 
 const PAGE_SIZE = 10;
+
+function StatCard({ label, value, icon, colorClass }) {
+  return (
+    <div className={`stat-card ${colorClass}`}>
+      <div className="stat-icon-wrap">{icon}</div>
+      <div className="stat-body">
+        <span className="stat-value">{value}</span>
+        <span className="stat-label">{label}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   const { user } = useAuth();
@@ -16,6 +29,7 @@ export default function DashboardPage() {
   const [loadingReports, setLoadingReports] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [toast, setToast] = useState(null);
 
   const showToast = (message, type = 'success') => {
@@ -64,10 +78,9 @@ export default function DashboardPage() {
     try {
       await api.post(`/api/diet/generate/${selectedId}`);
       showToast('Diet plan generated!');
-      // Refresh detail
       const { data } = await api.get(`/api/reports/${selectedId}`);
       setSelectedReport(data);
-      await fetchReports();
+      await fetchReports(page);
     } catch (err) {
       showToast(err.response?.data?.detail || 'Failed to generate diet plan', 'error');
     } finally {
@@ -75,87 +88,156 @@ export default function DashboardPage() {
     }
   };
 
-  const handlePrev = () => { if (page > 1) fetchReports(page - 1); };
-  const handleNext = () => { if (hasMore) fetchReports(page + 1); };
+  const handleDeleteReport = async (e, reportId) => {
+    e.stopPropagation();
+    if (!window.confirm('Delete this report and its diet plan permanently?')) return;
+    setDeletingId(reportId);
+    try {
+      await api.delete(`/api/reports/${reportId}`);
+      showToast('Report deleted');
+      if (selectedId === reportId) {
+        setSelectedId(null);
+        setSelectedReport(null);
+      }
+      await fetchReports(page);
+    } catch (err) {
+      showToast(err.response?.data?.detail || 'Failed to delete report', 'error');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  const totalReports = reports.length;
+  const plansGenerated = reports.filter((r) => r.diet_plan_id).length;
+  const totalIssues = reports.reduce((sum, r) => sum + (r.issues?.length ?? 0), 0);
 
   return (
-    <div className="dashboard">
-      <div className="dashboard-header">
-        <div>
-          <h2>Your Health Dashboard</h2>
-          <p className="dashboard-sub">Welcome back, <strong>{user.name}</strong></p>
+    <div className="page-wrap">
+      {/* Greeting banner */}
+      <header className="dash-greeting">
+        <div className="dash-greeting-text">
+          <h1>{greeting}, {user?.name?.split(' ')[0]}.</h1>
+          <p>Here's a summary of your health data.</p>
         </div>
-        <div className="dashboard-stats">
-          <div className="stat-chip">
-            <span className="stat-num">{reports.length}</span>
-            <span className="stat-label">Reports</span>
-          </div>
-          <div className="stat-chip">
-            <span className="stat-num">{reports.filter((r) => r.diet_plan_id).length}</span>
-            <span className="stat-label">Diet Plans</span>
-          </div>
-        </div>
+        <Link to="/new-report" className="btn btn-primary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '6px' }}>
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          New Report
+        </Link>
+      </header>
+
+      {/* Stat cards */}
+      <div className="dash-stats">
+        <StatCard
+          label="Reports uploaded"
+          value={totalReports}
+          colorClass="stat-green"
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+              <polyline points="10 9 9 9 8 9" />
+            </svg>
+          }
+        />
+        <StatCard
+          label="Diet plans generated"
+          value={plansGenerated}
+          colorClass="stat-orange"
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2" />
+              <path d="M7 2v20" />
+              <path d="M21 15V2v0a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3zm0 0v7" />
+            </svg>
+          }
+        />
+        <StatCard
+          label="Health flags"
+          value={totalIssues}
+          colorClass="stat-blue"
+          icon={
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+            </svg>
+          }
+        />
       </div>
 
-      {loadingReports ? (
-        <div className="loading">
-          <div className="spinner" />
-          <p>Loading your reports...</p>
-        </div>
-      ) : (
-        <div className="dashboard-body">
-          <section className="section">
-            <h3 className="section-title">Report History</h3>
-            <ReportHistoryTable
-              reports={reports}
-              selectedId={selectedId}
-              onSelect={handleSelectReport}
-            />
+      {/* Main content */}
+      <div className="dash-body">
+        {/* Report history */}
+        <section className="section-card">
+          <div className="section-card-header">
+            <h2 className="section-card-title">Report History</h2>
             {(page > 1 || hasMore) && (
               <div className="pagination">
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={handlePrev}
+                  onClick={() => fetchReports(page - 1)}
                   disabled={page === 1}
                 >
-                  ← Previous
+                  ← Prev
                 </button>
                 <span className="page-indicator">Page {page}</span>
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={handleNext}
+                  onClick={() => fetchReports(page + 1)}
                   disabled={!hasMore}
                 >
                   Next →
                 </button>
               </div>
             )}
-          </section>
+          </div>
 
-          {selectedId && (
-            <section className="section">
-              <h3 className="section-title">
-                Report Details
-                {loadingDetail && <span className="spinner-sm" style={{ marginLeft: 8 }} />}
-              </h3>
-              {loadingDetail ? (
-                <div className="loading">
-                  <div className="spinner" />
-                </div>
-              ) : (
-                <ReportDetailPanel
-                  report={selectedReport}
-                  onGenerateDiet={handleGenerateDiet}
-                  generating={generating}
-                />
-              )}
-            </section>
+          {loadingReports ? (
+            <div className="loading-state">
+              <div className="spinner" />
+              <p>Loading your reports…</p>
+            </div>
+          ) : (
+            <ReportHistoryTable
+              reports={reports}
+              selectedId={selectedId}
+              onSelect={handleSelectReport}
+              onDelete={handleDeleteReport}
+              deletingId={deletingId}
+            />
           )}
-        </div>
-      )}
+        </section>
+
+        {/* Detail panel */}
+        {selectedId && (
+          <section className="section-card">
+            <div className="section-card-header">
+              <h2 className="section-card-title">Report Details</h2>
+              {loadingDetail && <span className="spinner-sm" />}
+            </div>
+            {loadingDetail ? (
+              <div className="loading-state">
+                <div className="spinner" />
+              </div>
+            ) : (
+              <ReportDetailPanel
+                report={selectedReport}
+                onGenerateDiet={handleGenerateDiet}
+                generating={generating}
+              />
+            )}
+          </section>
+        )}
+      </div>
 
       {toast && (
-        <div className={`toast ${toast.type}`}>
+        <div className={`toast ${toast.type}`} role="status" aria-live="polite">
           {toast.type === 'success' ? '✓' : '✕'} {toast.message}
         </div>
       )}

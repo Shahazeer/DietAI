@@ -6,6 +6,7 @@ one per page. Nothing more. Parsing, validation, and analysis are handled
 downstream by the LabContemplator (Stage 2).
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from pdf2image import convert_from_path
@@ -48,7 +49,7 @@ class OCRService:
           Stage 1 (here)  — vision model transcribes each page to raw text
           Stage 2 (contemplator) — validates, structures, analyses the raw text
         """
-        image_paths = self._prepare_images(file_path)
+        image_paths = await self._prepare_images(file_path)
 
         raw_pages: list[str] = []
         for img_path in image_paths:
@@ -74,7 +75,7 @@ class OCRService:
         lab_data, health_analysis = await lab_contemplator.process(raw_pages, preferences)
         return lab_data, health_analysis
 
-    def _prepare_images(self, file_path: str) -> list[str]:
+    async def _prepare_images(self, file_path: str) -> list[str]:
         """
         PDFs → convert to PNG pages at 200 DPI, saved under uploads/images/<stem>/
         Images → return as-is
@@ -87,7 +88,8 @@ class OCRService:
             images_dir.mkdir(parents=True, exist_ok=True)
             logger.info("[OCR] Converting PDF → PNG (200 DPI) into %s", images_dir)
 
-            pages = convert_from_path(str(path), dpi=200)
+            # Run synchronous pdf2image in a thread so the event loop is not blocked
+            pages = await asyncio.to_thread(convert_from_path, str(path), dpi=200)
             img_paths = []
             for i, page in enumerate(pages):
                 img_path = images_dir / f"page{i}.png"
@@ -100,17 +102,28 @@ class OCRService:
         return [str(path)]
 
     async def _transcribe_image(self, image_path: str) -> str:
-        """Stage 1 — call vision model to transcribe a single page image"""
-        try:
-            response = await llm.generate_with_image(
-                model=settings.vision_model,
-                prompt=VISION_TRANSCRIBE_PROMPT,
-                image_path=image_path,
-            )
-            return response.strip()
-        except Exception as e:
-            logger.error("[OCR] Vision model failed on %s: %s", image_path, e)
-            return ""
+        """Stage 1 — call vision model to transcribe a single page image, with retries."""
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = await llm.generate_with_image(
+                    model=settings.vision_model,
+                    prompt=VISION_TRANSCRIBE_PROMPT,
+                    image_path=image_path,
+                )
+                return response.strip()
+            except Exception as e:
+                last_error = e
+                if attempt < 3:
+                    wait = 2 ** (attempt - 1)  # 1s, 2s
+                    logger.warning(
+                        "[OCR] Vision model failed (attempt %d/3) on %s: %s — retrying in %ds",
+                        attempt, image_path, e, wait,
+                    )
+                    await asyncio.sleep(wait)
+
+        logger.error("[OCR] Vision model failed after 3 attempts on %s: %s", image_path, last_error)
+        return ""
 
 
 ocr_service = OCRService()

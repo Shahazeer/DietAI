@@ -1,6 +1,6 @@
 import logging
 from app.services.ollama_client import llm
-from app.models.diet_plan import DietPlanResponse, DayPlan, Meal, ProgressReport
+from app.models.diet_plan import DayPlan, Meal, ProgressReport
 from app.models.lab_report import HealthAnalysis
 from app.config import settings
 from app.services.rag_retriever import get_rag_retriever

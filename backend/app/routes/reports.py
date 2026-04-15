@@ -2,7 +2,7 @@ import hashlib
 import logging
 import re
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends, Query, Response
 from bson import ObjectId
 from bson.errors import InvalidId
 from pathlib import Path
@@ -183,3 +183,40 @@ async def get_report(report_id: str, user: dict = Depends(get_current_user)):
         serialized["diet_plan"].pop("_id", None)
 
     return serialized
+
+
+@router.delete("/{report_id}", status_code=204)
+async def delete_report(report_id: str, user: dict = Depends(get_current_user)):
+    """
+    Hard-delete a report and all associated diet plans.
+    Also removes the uploaded PDF file from disk.
+    """
+    try:
+        oid = ObjectId(report_id)
+    except InvalidId:
+        raise HTTPException(400, detail="Invalid report ID format")
+
+    db = mongodb.get_database()
+    user_id = user["id"]
+
+    doc = await db.lab_reports.find_one({"_id": oid, "user_id": user_id})
+    if not doc:
+        raise HTTPException(404, detail="Report not found")
+
+    # Delete the PDF from disk (best-effort — don't fail if already gone)
+    file_path = doc.get("file_path")
+    if file_path:
+        Path(file_path).unlink(missing_ok=True)
+        logger.info("Deleted file from disk: %s", file_path)
+
+    # Delete all diet plans linked to this report
+    diet_result = await db.diet_plans.delete_many({"report_id": report_id})
+
+    # Delete the report itself
+    await db.lab_reports.delete_one({"_id": oid})
+
+    logger.info(
+        "Deleted report_id=%s and %d diet plan(s) for user=%s",
+        report_id, diet_result.deleted_count, user_id,
+    )
+    return Response(status_code=204)

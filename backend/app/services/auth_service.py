@@ -1,7 +1,9 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import bcrypt
 from jose import jwt
 from app.config import settings
+
+_ALGORITHM = "HS256"  # hardcoded — never load from config to prevent alg:none attacks
 
 
 def hash_password(password: str) -> str:
@@ -13,10 +15,10 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(user_id: str, email: str) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
     payload = {"sub": user_id, "email": email, "exp": expire}
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return jwt.encode(payload, settings.jwt_secret, algorithm=_ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
-    return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    return jwt.decode(token, settings.jwt_secret, algorithms=[_ALGORITHM])

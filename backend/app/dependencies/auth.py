@@ -20,7 +20,10 @@ async def get_current_user(
 
     from bson import ObjectId
     db = mongodb.get_database()
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    user = await db.users.find_one(
+        {"_id": ObjectId(user_id)},
+        {"hashed_password": 0},  # never load the password hash into request context
+    )
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 

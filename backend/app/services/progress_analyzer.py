@@ -1,3 +1,4 @@
+import json
 import logging
 from app.services.ollama_client import llm
 from app.models.diet_plan import ProgressReport
