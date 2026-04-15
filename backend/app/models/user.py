@@ -44,6 +44,13 @@ class UserOut(BaseModel):
     dietary_preferences: DietType
     allergies: list[str]
 
+    @field_validator("dietary_preferences", mode="before")
+    @classmethod
+    def coerce_diet_type(cls, v: object) -> str:
+        """Coerce legacy/unknown values (e.g. empty string) to non-veg."""
+        valid = {e.value for e in DietType}
+        return v if v in valid else DietType.non_veg.value
+
 
 class UserUpdate(BaseModel):
     name: str | None = None
