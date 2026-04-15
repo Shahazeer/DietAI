@@ -36,7 +36,10 @@ async def generate_diet_plan(report_id: str, user: dict = Depends(get_current_us
         "age": user.get("age"),
         "gender": user.get("gender"),
     }
-    health_analysis = HealthAnalysis(**report["health_analysis"])
+    try:
+        health_analysis = HealthAnalysis(**report.get("health_analysis", {}))
+    except Exception:
+        health_analysis = HealthAnalysis()
 
     previous_report = None
     if report.get("previous_report_id"):
@@ -59,11 +62,15 @@ async def generate_diet_plan(report_id: str, user: dict = Depends(get_current_us
             diet_plan=previous_plan.get("days", []),
         )
 
-    plan_data = await diet_planner.generate_plan(
-        health_analysis=health_analysis,
-        preferences=preferences,
-        progress=progress,
-    )
+    try:
+        plan_data = await diet_planner.generate_plan(
+            health_analysis=health_analysis,
+            preferences=preferences,
+            progress=progress,
+        )
+    except Exception as e:
+        logger.error("Diet plan generation failed for report=%s: %s", report_id, e)
+        raise HTTPException(502, detail="Failed to generate diet plan. The AI model may be unavailable — please try again.")
 
     now = datetime.now(timezone.utc)
     doc = {

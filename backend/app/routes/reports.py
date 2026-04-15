@@ -71,9 +71,14 @@ async def upload_lab_report(
         "allergies": user.get("allergies", []),
     }
 
-    extracted_data, health_analysis = await ocr_service.process_report(
-        str(file_path), preferences
-    )
+    try:
+        extracted_data, health_analysis = await ocr_service.process_report(
+            str(file_path), preferences
+        )
+    except Exception as e:
+        logger.error("OCR processing failed for file=%s: %s", file_name, e)
+        file_path.unlink(missing_ok=True)  # clean up the saved file on failure
+        raise HTTPException(502, detail="Failed to process the PDF. Please ensure the file is a clear, readable lab report.")
 
     previous_report = await db.lab_reports.find_one(
         {"user_id": user_id},
